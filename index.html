@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Neural Interface · Multi-Finger</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
+
+  <script type="module">
+    import {
+      HandLandmarker,
+      FaceLandmarker,
+      FilesetResolver
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+    window.HandLandmarker = HandLandmarker;
+    window.FaceLandmarker = FaceLandmarker;
+    window.FilesetResolver = FilesetResolver;
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { 
+      --neon: #39ff14; 
+      --neon2: #ff00ff; 
+      --bg: #080a08; 
+    }
+
+    body { 
+      background: var(--bg); 
+      color: #d0ffd0; 
+      font-family: 'Space Mono', monospace; 
+      display: flex; 
+      flex-direction: column; 
+      align-items: center; 
+      justify-content: center; 
+      min-height: 100vh; 
+      overflow: hidden; 
+    }
+
+    h1 { 
+      font-family: 'Syne', sans-serif; 
+      font-size: clamp(1.4rem, 4vw, 2.6rem); 
+      color: var(--neon); 
+      text-shadow: 0 0 18px var(--neon); 
+      margin-bottom: 0.3rem; 
+      text-transform: uppercase;
+    }
+
+    .subtitle { 
+      font-size: 0.72rem; 
+      letter-spacing: 0.18em; 
+      color: #4a7a4a; 
+      margin-bottom: 1.4rem; 
+      text-transform: uppercase; 
+    }
+
+    #canvas-wrap { 
+      position: relative; 
+      border: 1px solid #1a3a1a; 
+      border-radius: 12px; 
+      overflow: hidden; 
+      box-shadow: 0 0 50px rgba(57, 255, 20, 0.1);
+    }
+
+    #webcam { 
+      position: absolute; 
+      width: 1px; height: 1px; 
+      opacity: 0; 
+    }
+
+    #overlay { 
+      position: absolute; 
+      inset: 0; 
+      background: rgba(8,10,8,0.95); 
+      display: flex; 
+      flex-direction: column; 
+      align-items: center; 
+      justify-content: center; 
+      gap: 1.5rem; 
+      z-index: 100;
+      transition: opacity 0.5s; 
+    }
+
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+
+    #startBtn { 
+      font-family: 'Space Mono', monospace; 
+      color: var(--neon); 
+      border: 2px solid var(--neon); 
+      padding: 1rem 2.5rem; 
+      background: transparent; 
+      cursor: pointer; 
+      font-weight: bold;
+      letter-spacing: 2px;
+      transition: 0.3s;
+    }
+
+    #startBtn:hover {
+      background: rgba(57, 255, 20, 0.2);
+      box-shadow: 0 0 20px var(--neon);
+    }
+
+    #status { 
+      margin-top: 1rem; 
+      font-size: 0.7rem; 
+      color: #3a5c3a; 
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Neural Interface v2.0</h1>
+  <p class="subtitle">Multi-Finger Neural Web · Biometric Face Sync</p>
+
+  <div id="canvas-wrap">
+    <video id="webcam" autoplay playsinline></video>
+    <div id="overlay">
+      <div style="font-size:4rem; filter: drop-shadow(0 0 10px var(--neon))">🕸️</div>
+      <p style="font-size:0.8rem; color:var(--neon); letter-spacing:2px">READY FOR NEURAL LINK</p>
+      <button id="startBtn">INITIALIZE SYSTEM</button>
+    </div>
+  </div>
+
+  <p id="status">AWAITING BIOMETRIC AUTHENTICATION</p>
+
+  <script>
+    const videoEl = document.getElementById('webcam');
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const statusEl = document.getElementById('status');
+
+    let handLandmarker, faceLandmarker;
+    let modelReady = false;
+    let cameraOn = false;
+
+    // --- Tracking IDs (Tips of 5 fingers) ---
+    const TIP_IDS = [4, 8, 12, 16, 20];
+    let fingerPoints = TIP_IDS.map(() => ({ x: 0.5, y: 0.5, smoothX: 0.5, smoothY: 0.5 }));
+    
+    let mouthOpenness = 0;
+    let isLeaningIn = false;
+    const LERP_AMT = 0.18;
+
+    async function initModels() {
+      const vision = await window.FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+
+      // Initialize Hand Tracking
+      handLandmarker = await window.HandLandmarker.createFromOptions(vision, {
+        baseOptions: { 
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", 
+          delegate: "GPU" 
+        },
+        runningMode: "VIDEO", numHands: 1
+      });
+
+      // Initialize Face Tracking
+      faceLandmarker = await window.FaceLandmarker.createFromOptions(vision, {
+        baseOptions: { 
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", 
+          delegate: "GPU" 
+        },
+        runningMode: "VIDEO"
+      });
+
+      modelReady = true;
+      statusEl.textContent = "SYSTEM READY: CLICK INITIALIZE";
+    }
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { width: 1280, height: 720 } 
+        });
+        videoEl.srcObject = stream;
+        videoEl.onloadeddata = () => {
+          cameraOn = true;
+          overlay.classList.add('hidden');
+          statusEl.textContent = "LINK ACTIVE · TRACKING 5 NODES";
+          predictLoop();
+        };
+      } catch (e) { alert("Camera Error: " + e); }
+    }
+
+    function predictLoop() {
+      if (!modelReady || !cameraOn) return requestAnimationFrame(predictLoop);
+      const startTime = performance.now();
+      
+      // 1. Process Hand Points
+      const handResult = handLandmarker.detectForVideo(videoEl, startTime);
+      if (handResult.landmarks?.length > 0) {
+        const landmarks = handResult.landmarks[0];
+        TIP_IDS.forEach((id, index) => {
+            fingerPoints[index].x = 1 - landmarks[id].x;
+            fingerPoints[index].y = landmarks[id].y;
+        });
+      }
+
+      // 2. Process Face Biometrics
+      const faceResult = faceLandmarker.detectForVideo(videoEl, startTime);
+      if (faceResult.faceLandmarks?.length > 0) {
+        const face = faceResult.faceLandmarks[0];
+        mouthOpenness = dist(face[13].x, face[13].y, face[14].x, face[14].y);
+        isLeaningIn = dist(face[33].x, face[33].y, face[263].x, face[263].y) > 0.18;
+      }
+
+      requestAnimationFrame(predictLoop);
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    
+    // Check for MediaPipe Modules
+    const checkModule = setInterval(() => {
+        if (window.HandLandmarker && window.FaceLandmarker) {
+            initModels();
+            clearInterval(checkModule);
+        }
+    }, 100);
+
+    // --- p5.js Visualization Logic ---
+    function setup() {
+      const cnv = createCanvas(window.innerWidth * 0.9, window.innerHeight * 0.7);
+      cnv.parent('canvas-wrap');
+    }
+
+    function draw() {
+      background(8, 10, 8, 45); // Trail effect for motion
+
+      // Update and Smooth all finger positions
+      fingerPoints.forEach(p => {
+        p.smoothX = lerp(p.smoothX, p.x * width, LERP_AMT);
+        p.smoothY = lerp(p.smoothY, p.y * height, LERP_AMT);
+      });
+
+      // Face controls size of the nodes
+      let dynamicSize = map(mouthOpenness, 0.01, 0.08, 12, 100);
+      
+      // Draw Connections (Neural Web)
+      strokeWeight(1);
+      stroke(57, 255, 20, 60);
+      for (let i = 0; i < fingerPoints.length; i++) {
+        for (let j = i + 1; j < fingerPoints.length; j++) {
+            line(fingerPoints[i].smoothX, fingerPoints[i].smoothY, 
+                 fingerPoints[j].smoothX, fingerPoints[j].smoothY);
+        }
+      }
+
+      // Draw Glowing Nodes
+      fingerPoints.forEach((p, i) => {
+        push();
+        translate(p.smoothX, p.smoothY);
+        
+        if (isLeaningIn) {
+            // TRANSFORMATION MODE (Pink Square)
+            stroke(255, 0, 255);
+            noFill();
+            drawingContext.shadowBlur = 15;
+            drawingContext.shadowColor = '#ff00ff';
+            rotate(frameCount * 0.08 + i);
+            rectMode(CENTER);
+            rect(0, 0, dynamicSize, dynamicSize);
+        } else {
+            // STABLE MODE (Green Circle)
+            noStroke();
+            fill(57, 255, 20, 150);
+            drawingContext.shadowBlur = 20;
+            drawingContext.shadowColor = '#39ff14';
+            ellipse(0, 0, dynamicSize);
+            
+            // Core
+            fill(255, 255, 255, 200);
+            ellipse(0, 0, dynamicSize * 0.3);
+        }
+        pop();
+      });
+
+      // Simple HUD
+      fill(57, 255, 20, 180);
+      textSize(10);
+      textAlign(LEFT);
+      text(`BIOMETRIC_MOUTH: ${(mouthOpenness*1000).toFixed(0)}`, 20, height - 20);
+      textAlign(RIGHT);
+      text(`NEURAL_STATE: ${isLeaningIn ? 'ENHANCED' : 'STABLE'}`, width - 20, height - 20);
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth * 0.9, windowHeight * 0.7);
+    }
+  </script>
+</body>
+</html>
